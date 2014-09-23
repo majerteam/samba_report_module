@@ -97,18 +97,46 @@ def _share_item_skel():
     return {'machines': [], 'locked_files': []}
 
 
-def _avail_space():
-    samba_dirs = __salt__['pillar.get']('samba_dirs', ('/mnt/samba',))
+def _run_stat(directory, test=False):
+    if test:
+        # fake output
+        return '/'
+    stat_data = __salt__['cmd.run_all']("stat -c '%m' {0}".format(directory))
+    if stat_data['retcode'] != 0:
+        raise SmbstatusError(stat_data['stderr'])
+
+    return stat_data['stdout'].strip()
+
+
+_DEFAULT_SAMBA_EXPORTS = ('/mnt/samba',)
+
+
+def _avail_space(test=False):
+    """
+    :param bool test: are we running a test suite or should we run the command?
+    """
+    if test:
+        samba_dirs = _DEFAULT_SAMBA_EXPORTS
+    else:
+        samba_dirs = __salt__['pillar.get'](
+            'samba_dirs',
+            _DEFAULT_SAMBA_EXPORTS
+        )
 
     directory_to_mount_point = {}
     for directory in samba_dirs:
-        stat_data = __salt__['cmd.run_all']("stat -c '%m' {0}".format(directory))
-        if stat_data['retcode'] != 0:
-            raise SmbstatusError(stat_data['stderr'])
+        directory_to_mount_point[directory] = _run_stat(directory, test=test)
 
-        directory_to_mount_point[directory] = stat_data['stdout'].strip()
-
-    space_data = __salt__['disk.usage']()
+    if test:
+        space_data = {
+            '/': {
+                'used': '1000',
+                '1K-blocks': '1024',
+                'available': '24',
+            },
+        }
+    else:
+        space_data = __salt__['disk.usage']()
 
     single_mount_points = set(directory_to_mount_point.values())
 
@@ -127,7 +155,6 @@ def _avail_space():
     }
 
 
-
 def stats(test=False):
     """
     public function: returns stats about samba shares
@@ -144,7 +171,7 @@ def stats(test=False):
         for share, item in locked_files_gen:
             used_shares[share]['locked_files'].append(item)
 
-        avail_space = _avail_space()
+        avail_space = _avail_space(test=test)
     except SmbstatusError:
         return {'in_error': True}
 
@@ -241,7 +268,7 @@ def _normdate(datestr):
 
 def _parse_lock_line(index, line):
     if not line or line == '\n':
-        print "empty line: %d (zero indexed)" % index
+        print "empty line in locks: %d (zero indexed)" % index
         return None
     if any(line.startswith(ignored) for ignored in _LOCKS_IGNORED_STARTS):
         return None
